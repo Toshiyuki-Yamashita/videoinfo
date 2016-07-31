@@ -2,7 +2,7 @@
 
 setlocal
 set batchdir=%~dp0
-set buildtool=mingw
+set buildtool=vs2015
 set buildtarget_default=all
 set buildconfig_default=debug
 
