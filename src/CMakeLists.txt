@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 2.6)
 
 project(videoinfo)
-set(OpenCV_RUNTIME vc12)
+set(OpenCV_RUNTIME vc11)
 find_package(OpenCV)
 set(CMAKE_USE_RELATIVE_PATHS true)
 set(CMAKE_VERBOSE_MAKEFILE true)
