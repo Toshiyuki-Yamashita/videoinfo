@@ -11,3 +11,6 @@ set(CMAKE_VERBOSE_MAKEFILE true)
 include_directories(OpenCV_INCLUDE_DIRS)
 add_executable(videoinfo "main.cpp")
 target_link_libraries(videoinfo ${OpenCV_LIBS})
+
+add_executable(videocat "main.cpp")
+target_link_libraries(videocat ${OpenCV_LIBS})
