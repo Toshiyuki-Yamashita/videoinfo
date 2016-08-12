@@ -1,109 +1,131 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
+extern "C" {
+#include <WinSock2.h>
+#include <ws2tcpip.h>
+}
 #include <windows.h>
 #include <Shlwapi.h>
 #include <opencv2/opencv.hpp>
+#include "bzlib.h"
 #include <Vfw.h>
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "vfw32.lib")
+#pragma comment(lib, "Ws2_32.lib")
 #define BSIZE 4096
 
-int videoinfo(int argc, char** argv)
+#define IMAGESIZE (1280*960)
+
+int senddata(int sock, void* data, size_t size)
 {
-	char* input = NULL;
-	if (argc > 1)
-	{
-		input = argv[1];
-	}
-	cv::VideoCapture cap;
-
-	if (input == NULL)
-	{
-		return -1;
-	}
-	cap.open(input);
-
-	int frames = static_cast<int>(cap.get(CV_CAP_PROP_FRAME_COUNT));
-
-	fprintf(stdout, "%ld\n", frames);
-
+	char* p = static_cast<char*>(data);
+	do {
+		int l = send(sock, p, size, 0);
+		if (l < 0) return -1;
+		p += l;
+		size -= l;
+	} while (size > 0);
 	return 0;
 }
 
-struct videowriter;
-typedef int (writefunc)(videowriter* w, cv::Mat& img, double fps, cv::Size size);
-
-struct videowriter
+int recvdata(int sock, void* data, size_t size)
 {
-	writefunc* write;
-	const char* filename;
-	int fourcc;
-	int count;
-	cv::VideoWriter w;
-};
-
-static int writeframe(videowriter* w, cv::Mat& img, double fps, cv::Size size)
-{
-	w->w.write(img);
-	w->count++;
+	char* p = static_cast<char*>(data);
+	do {
+		int l = recv(sock, p , size, 0);
+		if (l < 0) return -1;
+		p += l;
+		size -= l;
+	} while (size > 0);
 	return 0;
 }
 
-static int writestart(videowriter* w, cv::Mat& img, double fps, cv::Size size)
+int connectsrv(const char* server, const char* port)
 {
-	w->w.open(w->filename, w->fourcc, fps, size);
-	w->write = &writeframe;
-	return w->write(w, img, fps, size);
-}
+	struct addrinfo *results = NULL;
+	struct addrinfo *addrptr = NULL;
+	struct addrinfo hints = { 0 };
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_family = AF_UNSPEC;
 
-static int videowriter_init(videowriter* w, const char* filename, int fourcc)
-{
-	w->filename = filename;
-	w->fourcc = fourcc;
-	w->write = &writestart;
-	w->count = 0;
-	return 0;
-}
-int videocat(int argc, char** argv)
-{
-	AVIFileInit();
-	videowriter w;
-	videowriter_init(&w, "output.avi", CV_FOURCC('D', 'I', 'B', ' '));
-	int count = 0;
-	for (int i = 0; i < argc; i++)
+	getaddrinfo(
+		server,//ローカルホストを指定します
+		port,
+		&hints,
+		&results
+	);
+
+	int sock = socket(results->ai_family, results->ai_socktype, results->ai_protocol);
+
+	while (connect(sock, results->ai_addr, results->ai_addrlen) != 0)
 	{
-		cv::VideoCapture cap;
-		cv::Size size;
-		cap.open(argv[i+1]);
-		double fps = cap.get(CV_CAP_PROP_FPS);
-		size.width = static_cast<int>(cap.get(CV_CAP_PROP_FRAME_WIDTH));
-		size.height = static_cast<int>(cap.get(CV_CAP_PROP_FRAME_HEIGHT));
-		cv::Mat img;
-		while (cap.grab())
-		{ 
-			cap.retrieve(img);
-			w.write(&w, img, fps, size);
+		fprintf(stderr, "retrying... %s:%s\n", server, port);
+		Sleep(100);
+	};
+	fprintf(stderr, "connected %s:%s\n", server, port);
+
+	cv::namedWindow("test");
+	static char src[IMAGESIZE];
+	static char buff[IMAGESIZE];
+	char fname[4096];
+
+	LARGE_INTEGER freq;
+	LARGE_INTEGER time;
+	::QueryPerformanceFrequency(&freq);
+	::QueryPerformanceCounter(&time);
+	while (true)
+	{
+		struct 
+		{
+			int size;
+			int serial;
+		} head = { 0 };
+		int cmd = 0;
+		//senddata(sock, &cmd, sizeof(cmd));
+		if (recvdata(sock, &head, sizeof(head)) < 0)
+		{
+			Sleep(66);
+			continue;
 		}
+		recvdata(sock, src, head.size);
+		LARGE_INTEGER now1;
+		::QueryPerformanceCounter(&now1);
+		unsigned int blen = IMAGESIZE;
+		BZ2_bzBuffToBuffDecompress(buff, &blen, src, head.size, 0, 0);
+		cv::Mat img(960, 1280, CV_8UC1, buff);
+		_snprintf(fname, 4096, "image-%d.png", head.serial);
+		cv::imwrite(fname, img);
+		//cv::imshow("test", img);
+		//cv::waitKey(1);
+		LARGE_INTEGER now;
+		::QueryPerformanceCounter(&now);
+		fprintf(stdout, "serial: %d size: %d %lf %lf\n", head.serial, head.size, (double)(now.QuadPart - time.QuadPart)/freq.QuadPart, (double)(now1.QuadPart - time.QuadPart) / freq.QuadPart);
+		time = now;
 	}
-	AVIFileExit();
-	fprintf(stdout, "%d frames wrote", w.count);
+
+
+	freeaddrinfo(results);
 	return 0;
 }
+
 
 int main(int argc, char** argv)
 {
-	TCHAR name[BSIZE];
+	WSADATA wsaData = { 0 };
+	WSAStartup(MAKEWORD(2, 2), &wsaData);
+	char* target = argv[1];
+	char* port = argv[2];
 
-	GetModuleFileName(NULL, name, BSIZE);
-	LPSTR n = PathFindFileName(name);
-
-	if (strcmp(n, "videoinfo.exe") == 0)
+	if (argc < 3)
 	{
-		return videoinfo(argc, argv);
+		return -1;
 	}
 
-	if (strcmp(n, "videocat.exe") == 0)
-	{
-		return videocat(argc, argv);
-	}
 
+	connectsrv(target, port);
+
+	WSACleanup();
 	return 0;
 }
